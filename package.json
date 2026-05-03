@@ -5,8 +5,35 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "start:http": "MCP_HTTP=true node index.js"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "latam",
+    "brazil",
+    "mexico",
+    "chile",
+    "argentina",
+    "colombia",
+    "tax",
+    "invoice",
+    "vat",
+    "compliance",
+    "business",
+    "cpf",
+    "cnpj",
+    "rfc",
+    "rut",
+    "cuit",
+    "nit"
+  ],
+  "author": "MCPize",
+  "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.22.0"

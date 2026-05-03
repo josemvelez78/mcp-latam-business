@@ -4,6 +4,69 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import http from "http";
 
+// ════════════════════════════════════════════════
+// SHARED HELPERS (timezone-safe)
+// ════════════════════════════════════════════════
+
+// Format Date as YYYY-MM-DD using LOCAL time (avoids UTC offset bugs)
+const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
+
+const getEaster = (y) => {
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100;
+  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(y, month - 1, day);
+};
+
+const nextMondayCO = (d) => { const r = new Date(d); const day = r.getDay(); if (day !== 1) r.setDate(r.getDate() + (8 - day) % 7); return r; };
+
+// Returns array of YYYY-MM-DD strings of moveable (Easter-based) holidays for a country/year
+const getMoveableHolidayDates = (year, country) => {
+  const easter = getEaster(year);
+  const dates = [];
+  if (country === "BR") {
+    dates.push(fmt(addDays(easter, -48))); // Carnaval Segunda
+    dates.push(fmt(addDays(easter, -47))); // Carnaval Terça
+    dates.push(fmt(addDays(easter, -2)));  // Sexta-feira Santa
+    dates.push(fmt(addDays(easter, 60)));  // Corpus Christi
+  }
+  if (country === "CL") {
+    dates.push(fmt(addDays(easter, -2))); // Viernes Santo
+    dates.push(fmt(addDays(easter, -1))); // Sábado Santo
+  }
+  if (country === "AR") {
+    dates.push(fmt(addDays(easter, -48))); // Carnaval Lunes
+    dates.push(fmt(addDays(easter, -47))); // Carnaval Martes
+    dates.push(fmt(addDays(easter, -2)));  // Viernes Santo
+  }
+  if (country === "CO") {
+    dates.push(fmt(nextMondayCO(addDays(easter, -3))));  // Jueves Santo
+    dates.push(fmt(addDays(easter, -2)));                 // Viernes Santo (not moved)
+    dates.push(fmt(nextMondayCO(addDays(easter, 39))));   // Ascensión
+    dates.push(fmt(nextMondayCO(addDays(easter, 60))));   // Corpus Christi
+    dates.push(fmt(nextMondayCO(addDays(easter, 68))));   // Sagrado Corazón
+  }
+  return dates;
+};
+
+const FIXED_HOLIDAYS = {
+  BR: ["01-01","04-21","05-01","09-07","10-12","11-02","11-15","11-20","12-25"],
+  MX: ["01-01","05-01","09-16","12-25"],
+  CL: ["01-01","05-01","05-21","06-20","06-29","07-16","08-15","09-18","09-19","10-12","10-31","11-01","12-08","12-25"],
+  AR: ["01-01","03-24","04-02","05-01","05-25","06-20","07-09","08-17","10-12","11-20","12-08","12-25"],
+  CO: ["01-01","05-01","07-20","08-07","12-08","12-25"],
+};
+
+// ════════════════════════════════════════════════
+// SERVER FACTORY
+// ════════════════════════════════════════════════
+
 const createServer = () => {
   const server = new McpServer({
     name: "mcp-latam-business",
@@ -87,18 +150,6 @@ const createServer = () => {
     outputSchema: { year: z.number(), country: z.string(), total_holidays: z.number(), holidays: z.array(z.object({ date: z.string(), name: z.string(), name_en: z.string() })) },
     annotations: { title: "Get Brazil Public Holidays", readOnlyHint: true, idempotentHint: true, openWorldHint: false }
   }, async ({ year }) => {
-    const getEaster = (y) => {
-      const a = y % 19, b = Math.floor(y / 100), c = y % 100;
-      const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
-      const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
-      const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
-      const m = Math.floor((a + 11 * h + 22 * l) / 451);
-      const month = Math.floor((h + l - 7 * m + 114) / 31);
-      const day = ((h + l - 7 * m + 114) % 31) + 1;
-      return new Date(y, month - 1, day);
-    };
-    const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
-    const fmt = (d) => d.toISOString().split("T")[0];
     const easter = getEaster(year);
     const holidays = [
       { date: `${year}-01-01`, name: "Ano Novo", name_en: "New Year's Day" },
@@ -148,7 +199,6 @@ const createServer = () => {
   }, async ({ year }) => {
     const firstMonday = (y, m) => { const d = new Date(y, m - 1, 1); return new Date(y, m - 1, 1 + (8 - d.getDay()) % 7); };
     const thirdMonday = (y, m) => { const fm = firstMonday(y, m); return new Date(fm.getTime() + 14 * 86400000); };
-    const fmt = (d) => d.toISOString().split("T")[0];
     const holidays = [
       { date: `${year}-01-01`, name: "Año Nuevo", name_en: "New Year's Day" },
       { date: fmt(firstMonday(year, 2)), name: "Día de la Constitución", name_en: "Constitution Day" },
@@ -196,16 +246,6 @@ const createServer = () => {
     outputSchema: { year: z.number(), country: z.string(), total_holidays: z.number(), holidays: z.array(z.object({ date: z.string(), name: z.string(), name_en: z.string() })) },
     annotations: { title: "Get Chile Public Holidays", readOnlyHint: true, idempotentHint: true, openWorldHint: false }
   }, async ({ year }) => {
-    const getEaster = (y) => {
-      const a = y % 19, b = Math.floor(y / 100), c = y % 100;
-      const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
-      const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
-      const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
-      const m = Math.floor((a + 11 * h + 22 * l) / 451);
-      return new Date(y, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1);
-    };
-    const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
-    const fmt = (d) => d.toISOString().split("T")[0];
     const easter = getEaster(year);
     const holidays = [
       { date: `${year}-01-01`, name: "Año Nuevo", name_en: "New Year's Day" },
@@ -278,16 +318,6 @@ const createServer = () => {
     outputSchema: { year: z.number(), country: z.string(), total_holidays: z.number(), holidays: z.array(z.object({ date: z.string(), name: z.string(), name_en: z.string() })) },
     annotations: { title: "Get Argentina Public Holidays", readOnlyHint: true, idempotentHint: true, openWorldHint: false }
   }, async ({ year }) => {
-    const getEaster = (y) => {
-      const a = y % 19, b = Math.floor(y / 100), c = y % 100;
-      const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
-      const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
-      const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
-      const m = Math.floor((a + 11 * h + 22 * l) / 451);
-      return new Date(y, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1);
-    };
-    const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
-    const fmt = (d) => d.toISOString().split("T")[0];
     const easter = getEaster(year);
     const holidays = [
       { date: `${year}-01-01`, name: "Año Nuevo", name_en: "New Year's Day" },
@@ -398,35 +428,24 @@ const createServer = () => {
     outputSchema: { year: z.number(), country: z.string(), total_holidays: z.number(), holidays: z.array(z.object({ date: z.string(), name: z.string(), name_en: z.string() })) },
     annotations: { title: "Get Colombia Public Holidays", readOnlyHint: true, idempotentHint: true, openWorldHint: false }
   }, async ({ year }) => {
-    const getEaster = (y) => {
-      const a = y % 19, b = Math.floor(y / 100), c = y % 100;
-      const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
-      const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
-      const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
-      const m = Math.floor((a + 11 * h + 22 * l) / 451);
-      return new Date(y, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1);
-    };
-    const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
-    const fmt = (d) => d.toISOString().split("T")[0];
-    const nextMonday = (d) => { const r = new Date(d); const day = r.getDay(); if (day !== 1) r.setDate(r.getDate() + (8 - day) % 7); return r; };
     const easter = getEaster(year);
     const holidays = [
       { date: `${year}-01-01`, name: "Año Nuevo", name_en: "New Year's Day" },
-      { date: fmt(nextMonday(new Date(year, 0, 6))), name: "Reyes Magos", name_en: "Epiphany" },
-      { date: fmt(nextMonday(new Date(year, 2, 19))), name: "San José", name_en: "St Joseph's Day" },
+      { date: fmt(nextMondayCO(new Date(year, 0, 6))), name: "Reyes Magos", name_en: "Epiphany" },
+      { date: fmt(nextMondayCO(new Date(year, 2, 19))), name: "San José", name_en: "St Joseph's Day" },
       { date: fmt(addDays(easter, -3)), name: "Jueves Santo", name_en: "Holy Thursday" },
       { date: fmt(addDays(easter, -2)), name: "Viernes Santo", name_en: "Good Friday" },
       { date: `${year}-05-01`, name: "Día del Trabajo", name_en: "Labour Day" },
-      { date: fmt(nextMonday(addDays(easter, 39))), name: "Ascensión", name_en: "Ascension Day" },
-      { date: fmt(nextMonday(addDays(easter, 60))), name: "Corpus Christi", name_en: "Corpus Christi" },
-      { date: fmt(nextMonday(addDays(easter, 68))), name: "Sagrado Corazón", name_en: "Sacred Heart" },
-      { date: fmt(nextMonday(new Date(year, 5, 29))), name: "San Pedro y San Pablo", name_en: "Saints Peter and Paul" },
+      { date: fmt(nextMondayCO(addDays(easter, 39))), name: "Ascensión", name_en: "Ascension Day" },
+      { date: fmt(nextMondayCO(addDays(easter, 60))), name: "Corpus Christi", name_en: "Corpus Christi" },
+      { date: fmt(nextMondayCO(addDays(easter, 68))), name: "Sagrado Corazón", name_en: "Sacred Heart" },
+      { date: fmt(nextMondayCO(new Date(year, 5, 29))), name: "San Pedro y San Pablo", name_en: "Saints Peter and Paul" },
       { date: `${year}-07-20`, name: "Independencia de Colombia", name_en: "Independence Day" },
       { date: `${year}-08-07`, name: "Batalla de Boyacá", name_en: "Battle of Boyacá" },
-      { date: fmt(nextMonday(new Date(year, 7, 15))), name: "Asunción de la Virgen", name_en: "Assumption of Mary" },
-      { date: fmt(nextMonday(new Date(year, 9, 12))), name: "Día de la Raza", name_en: "Columbus Day" },
-      { date: fmt(nextMonday(new Date(year, 10, 1))), name: "Todos los Santos", name_en: "All Saints' Day" },
-      { date: fmt(nextMonday(new Date(year, 10, 11))), name: "Independencia de Cartagena", name_en: "Cartagena Independence" },
+      { date: fmt(nextMondayCO(new Date(year, 7, 15))), name: "Asunción de la Virgen", name_en: "Assumption of Mary" },
+      { date: fmt(nextMondayCO(new Date(year, 9, 12))), name: "Día de la Raza", name_en: "Columbus Day" },
+      { date: fmt(nextMondayCO(new Date(year, 10, 1))), name: "Todos los Santos", name_en: "All Saints' Day" },
+      { date: fmt(nextMondayCO(new Date(year, 10, 11))), name: "Independencia de Cartagena", name_en: "Cartagena Independence" },
       { date: `${year}-12-08`, name: "Inmaculada Concepción", name_en: "Immaculate Conception" },
       { date: `${year}-12-25`, name: "Navidad", name_en: "Christmas Day" },
     ];
@@ -511,7 +530,7 @@ const createServer = () => {
   server.registerTool("get_vat_rules_latam", {
     description: "Returns all VAT/IVA rules for a given Latin American country — standard rate, reduced rates, exempt categories, withholding rules, and special regimes. Returns { country, standard_rate, reduced_rates, exempt_categories, withholding, special_regimes, currency, notes }. Supports BR, MX, CL, AR, CO. Brazil returns ICMS/ISS/PIS/COFINS structure. Use when calculating LatAm invoice taxes, determining correct rate for e-commerce checkout, or building tax compliance workflows. Information provided as reference only — not legal or tax advice.",
     inputSchema: { country_code: z.string().describe("Two-letter ISO country code. Example: 'BR', 'MX', 'CL', 'AR', 'CO'") },
-    outputSchema: { country: z.string().optional(), standard_rate: z.number().optional(), reduced_rates: z.array(z.number()).optional(), exempt_categories: z.array(z.string()).optional(), withholding: z.string().optional(), special_regimes: z.array(z.string()).optional(), currency: z.string().optional(), notes: z.string().optional(), disclaimer: z.string().optional(), error: z.string().optional() },
+    outputSchema: { country: z.string().optional(), standard_rate: z.number().nullable().optional(), reduced_rates: z.array(z.number()).optional(), exempt_categories: z.array(z.string()).optional(), withholding: z.string().optional(), special_regimes: z.array(z.string()).optional(), currency: z.string().optional(), notes: z.string().optional(), disclaimer: z.string().optional(), error: z.string().optional() },
     annotations: { title: "Get LatAm VAT Rules", readOnlyHint: true, idempotentHint: true, openWorldHint: false }
   }, async ({ country_code }) => {
     const rules = {
@@ -570,31 +589,12 @@ const createServer = () => {
     const supported = ["BR", "MX", "CL", "AR", "CO"];
     if (!supported.includes(code)) { const r = { error: `Country ${code} not supported. Supported: ${supported.join(", ")}` }; return { content: [{ type: "text", text: JSON.stringify(r) }], structuredContent: r }; }
 
-    const getEaster = (y) => {
-      const a = y % 19, b = Math.floor(y / 100), c = y % 100;
-      const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
-      const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
-      const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
-      const m = Math.floor((a + 11 * h + 22 * l) / 451);
-      return new Date(y, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1);
-    };
-    const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
-    const fmt = (d) => d.toISOString().split("T")[0];
-
-    const fixedHolidays = {
-      BR: ["01-01","04-21","05-01","09-07","10-12","11-02","11-15","11-20","12-25"],
-      MX: ["01-01","05-01","09-16","12-25"],
-      CL: ["01-01","05-01","05-21","06-20","06-29","07-16","08-15","09-18","09-19","10-12","10-31","11-01","12-08","12-25"],
-      AR: ["01-01","03-24","04-02","05-01","05-25","06-20","07-09","08-17","10-12","11-20","12-08","12-25"],
-      CO: ["01-01","05-01","07-20","08-07","12-08","12-25"],
-    };
-
     const startYear = start.getFullYear(), endYear = end.getFullYear();
     let allHolidays = [];
 
     for (let y = startYear; y <= endYear; y++) {
       const easter = getEaster(y);
-      const fixed = (fixedHolidays[code] || []).map(mmdd => ({ date: `${y}-${mmdd}`, name: mmdd, name_en: mmdd }));
+      const fixed = (FIXED_HOLIDAYS[code] || []).map(mmdd => ({ date: `${y}-${mmdd}`, name: mmdd, name_en: mmdd }));
       const moveable = [];
 
       if (code === "BR") {
@@ -620,19 +620,18 @@ const createServer = () => {
         moveable.push({ date: fmt(addDays(easter, -2)), name: "Viernes Santo", name_en: "Good Friday" });
       }
       if (code === "CO") {
-        const nextMonday = (d) => { const r = new Date(d); const day = r.getDay(); if (day !== 1) r.setDate(r.getDate() + (8 - day) % 7); return r; };
-        moveable.push({ date: fmt(nextMonday(new Date(y, 0, 6))), name: "Reyes Magos", name_en: "Epiphany" });
-        moveable.push({ date: fmt(nextMonday(new Date(y, 2, 19))), name: "San José", name_en: "St Joseph's Day" });
+        moveable.push({ date: fmt(nextMondayCO(new Date(y, 0, 6))), name: "Reyes Magos", name_en: "Epiphany" });
+        moveable.push({ date: fmt(nextMondayCO(new Date(y, 2, 19))), name: "San José", name_en: "St Joseph's Day" });
         moveable.push({ date: fmt(addDays(easter, -3)), name: "Jueves Santo", name_en: "Holy Thursday" });
         moveable.push({ date: fmt(addDays(easter, -2)), name: "Viernes Santo", name_en: "Good Friday" });
-        moveable.push({ date: fmt(nextMonday(addDays(easter, 39))), name: "Ascensión", name_en: "Ascension" });
-        moveable.push({ date: fmt(nextMonday(addDays(easter, 60))), name: "Corpus Christi", name_en: "Corpus Christi" });
-        moveable.push({ date: fmt(nextMonday(addDays(easter, 68))), name: "Sagrado Corazón", name_en: "Sacred Heart" });
-        moveable.push({ date: fmt(nextMonday(new Date(y, 5, 29))), name: "San Pedro y San Pablo", name_en: "SS Peter & Paul" });
-        moveable.push({ date: fmt(nextMonday(new Date(y, 7, 15))), name: "Asunción", name_en: "Assumption" });
-        moveable.push({ date: fmt(nextMonday(new Date(y, 9, 12))), name: "Día de la Raza", name_en: "Columbus Day" });
-        moveable.push({ date: fmt(nextMonday(new Date(y, 10, 1))), name: "Todos los Santos", name_en: "All Saints" });
-        moveable.push({ date: fmt(nextMonday(new Date(y, 10, 11))), name: "Independencia de Cartagena", name_en: "Cartagena Independence" });
+        moveable.push({ date: fmt(nextMondayCO(addDays(easter, 39))), name: "Ascensión", name_en: "Ascension" });
+        moveable.push({ date: fmt(nextMondayCO(addDays(easter, 60))), name: "Corpus Christi", name_en: "Corpus Christi" });
+        moveable.push({ date: fmt(nextMondayCO(addDays(easter, 68))), name: "Sagrado Corazón", name_en: "Sacred Heart" });
+        moveable.push({ date: fmt(nextMondayCO(new Date(y, 5, 29))), name: "San Pedro y San Pablo", name_en: "SS Peter & Paul" });
+        moveable.push({ date: fmt(nextMondayCO(new Date(y, 7, 15))), name: "Asunción", name_en: "Assumption" });
+        moveable.push({ date: fmt(nextMondayCO(new Date(y, 9, 12))), name: "Día de la Raza", name_en: "Columbus Day" });
+        moveable.push({ date: fmt(nextMondayCO(new Date(y, 10, 1))), name: "Todos los Santos", name_en: "All Saints" });
+        moveable.push({ date: fmt(nextMondayCO(new Date(y, 10, 11))), name: "Independencia de Cartagena", name_en: "Cartagena Independence" });
       }
       allHolidays = allHolidays.concat(fixed, moveable);
     }
@@ -648,7 +647,7 @@ const createServer = () => {
 
   // ── 23. Calculate Working Days LatAm ──
   server.registerTool("calculate_working_days_latam", {
-    description: "Counts the number of working days between two dates (inclusive) for a given Latin American country, excluding weekends and that country's national public holidays. Returns { country, start_date, end_date, working_days, holidays_excluded }. Supports BR, MX, CL, AR, CO. Use when calculating cross-border SLA periods, invoice payment deadlines, or project timelines that must account for different national holiday calendars across LatAm.",
+    description: "Counts the number of working days between two dates (inclusive) for a given Latin American country, excluding weekends and that country's national public holidays (including moveable Easter-based holidays). Returns { country, start_date, end_date, working_days, holidays_excluded }. Supports BR, MX, CL, AR, CO. Use when calculating cross-border SLA periods, invoice payment deadlines, or project timelines that must account for different national holiday calendars across LatAm.",
     inputSchema: {
       country_code: z.string().describe("Two-letter ISO country code. Example: 'BR', 'MX', 'CO'"),
       start_date: z.string().describe("Start date in YYYY-MM-DD format, inclusive. Example: '2026-01-01'"),
@@ -657,34 +656,6 @@ const createServer = () => {
     outputSchema: { country: z.string().optional(), start_date: z.string().optional(), end_date: z.string().optional(), working_days: z.number().optional(), holidays_excluded: z.number().optional(), error: z.string().optional() },
     annotations: { title: "Calculate Working Days (LatAm Multi-Country)", readOnlyHint: true, idempotentHint: true, openWorldHint: false }
   }, async ({ country_code, start_date, end_date }) => {
-    const fixedHolidays = {
-      BR: ["01-01","04-21","05-01","09-07","10-12","11-02","11-15","11-20","12-25"],
-      MX: ["01-01","05-01","09-16","12-25"],
-      CL: ["01-01","05-01","05-21","06-20","06-29","07-16","08-15","09-18","09-19","10-12","10-31","11-01","12-08","12-25"],
-      AR: ["01-01","03-24","04-02","05-01","05-25","06-20","07-09","08-17","10-12","11-20","12-08","12-25"],
-      CO: ["01-01","05-01","07-20","08-07","12-08","12-25"],
-    };
-
-    const getEasterDates = (y, country) => {
-      const a = y % 19, b = Math.floor(y / 100), c = y % 100;
-      const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
-      const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
-      const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
-      const m = Math.floor((a + 11 * h + 22 * l) / 451);
-      const easter = new Date(y, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1);
-      const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
-      const fmt = (d) => d.toISOString().split("T")[0];
-      const dates = [];
-      if (country === "BR") { dates.push(fmt(addDays(easter, -48)), fmt(addDays(easter, -47)), fmt(addDays(easter, -2)), fmt(addDays(easter, 60))); }
-      if (country === "CL") { dates.push(fmt(addDays(easter, -2)), fmt(addDays(easter, -1))); }
-      if (country === "AR") { dates.push(fmt(addDays(easter, -48)), fmt(addDays(easter, -47)), fmt(addDays(easter, -2))); }
-      if (country === "CO") {
-        const nextMonday = (d) => { const r = new Date(d); const day = r.getDay(); if (day !== 1) r.setDate(r.getDate() + (8 - day) % 7); return r; };
-        dates.push(fmt(nextMonday(addDays(easter, -3))), fmt(nextMonday(addDays(easter, -2))), fmt(nextMonday(addDays(easter, 39))), fmt(nextMonday(addDays(easter, 60))), fmt(nextMonday(addDays(easter, 68))));
-      }
-      return dates;
-    };
-
     const code = country_code.toUpperCase();
     const supported = ["BR", "MX", "CL", "AR", "CO"];
     if (!supported.includes(code)) { const r = { error: `Country ${code} not supported. Supported: ${supported.join(", ")}` }; return { content: [{ type: "text", text: JSON.stringify(r) }], structuredContent: r }; }
@@ -692,16 +663,22 @@ const createServer = () => {
     const start = new Date(start_date), end = new Date(end_date);
     if (isNaN(start) || isNaN(end)) { const r = { error: "Invalid date format. Use YYYY-MM-DD" }; return { content: [{ type: "text", text: JSON.stringify(r) }], structuredContent: r }; }
 
-    const fixed = fixedHolidays[code] || [];
+    const fixed = FIXED_HOLIDAYS[code] || [];
+
+    // Pre-compute moveable holidays for all years in range
+    const moveableByYear = {};
+    for (let y = start.getFullYear(); y <= end.getFullYear(); y++) {
+      moveableByYear[y] = getMoveableHolidayDates(y, code);
+    }
+
     let count = 0, holidaysExcluded = 0;
     const current = new Date(start);
 
     while (current <= end) {
       const dow = current.getDay();
       const mmdd = `${String(current.getMonth() + 1).padStart(2, "0")}-${String(current.getDate()).padStart(2, "0")}`;
-      const fullDate = current.toISOString().split("T")[0];
-      const easterDates = getEasterDates(current.getFullYear(), code);
-      const isHoliday = fixed.includes(mmdd) || easterDates.includes(fullDate);
+      const fullDate = fmt(current);
+      const isHoliday = fixed.includes(mmdd) || (moveableByYear[current.getFullYear()] || []).includes(fullDate);
       if (dow !== 0 && dow !== 6 && !isHoliday) count++;
       else if (dow !== 0 && dow !== 6 && isHoliday) holidaysExcluded++;
       current.setDate(current.getDate() + 1);
@@ -713,43 +690,72 @@ const createServer = () => {
 
   // ── 24. Get Next Payment Date LatAm ──
   server.registerTool("get_next_payment_date_latam", {
-    description: "Calculates the next valid payment date for a given Latin American country, skipping weekends and national public holidays. Supports rules: 'last_working_day_of_month' (salary payment in BR/AR), 'first_working_day_of_month', 'nth_working_day' (e.g. 5th working day for BR salary), 'next_working_day'. Returns { country, reference_date, rule, result_date }. Use when scheduling salary payments, NF-e/CFDI payment due dates, or any automated payment workflow that must avoid non-working days in LatAm.",
+    description: "Calculates the next valid payment date for a given Latin American country, skipping weekends and national public holidays (fixed and moveable Easter-based). Supports rules: 'last_working_day_of_month' (salary payment in BR/AR), 'first_working_day_of_month', 'nth_working_day' (e.g. 5th working day for BR salary), 'next_working_day'. Returns { country, reference_date, rule, result_date }. Use when scheduling salary payments, NF-e/CFDI payment due dates, or any automated payment workflow that must avoid non-working days in LatAm.",
     inputSchema: {
       country_code: z.string().describe("Two-letter ISO country code. Example: 'BR', 'MX', 'CO'"),
       reference_date: z.string().describe("Reference date in YYYY-MM-DD format. Example: '2026-01-31'"),
       rule: z.enum(["last_working_day_of_month", "first_working_day_of_month", "next_working_day", "nth_working_day"]).describe("Payment rule to apply."),
       n: z.number().optional().describe("For nth_working_day rule: which working day of the month. Example: 5 for 5th working day.")
     },
-    outputSchema: { country: z.string().optional(), reference_date: z.string().optional(), rule: z.string().optional(), result_date: z.string().optional(), error: z.string().optional() },
+    outputSchema: { country: z.string().optional(), reference_date: z.string().optional(), rule: z.string().optional(), n: z.number().nullable().optional(), result_date: z.string().optional(), error: z.string().optional() },
     annotations: { title: "Get Next Payment Date (LatAm)", readOnlyHint: true, idempotentHint: true, openWorldHint: false }
   }, async ({ country_code, reference_date, rule, n }) => {
-    const fixedHolidays = {
-      BR: ["01-01","04-21","05-01","09-07","10-12","11-02","11-15","11-20","12-25"],
-      MX: ["01-01","05-01","09-16","12-25"],
-      CL: ["01-01","05-01","05-21","06-20","06-29","07-16","08-15","09-18","09-19","10-12","10-31","11-01","12-08","12-25"],
-      AR: ["01-01","03-24","04-02","05-01","05-25","06-20","07-09","08-17","10-12","11-20","12-08","12-25"],
-      CO: ["01-01","05-01","07-20","08-07","12-08","12-25"],
-    };
     const code = country_code.toUpperCase();
-    const fixed = fixedHolidays[code] || [];
+    const supported = ["BR", "MX", "CL", "AR", "CO"];
+    if (!supported.includes(code)) { const r = { error: `Country ${code} not supported. Supported: ${supported.join(", ")}` }; return { content: [{ type: "text", text: JSON.stringify(r) }], structuredContent: r }; }
+
+    const fixed = FIXED_HOLIDAYS[code] || [];
+    const moveableCache = {};
+    const getMoveable = (y) => {
+      if (!moveableCache[y]) moveableCache[y] = getMoveableHolidayDates(y, code);
+      return moveableCache[y];
+    };
+
     const isWorkingDay = (date) => {
       const dow = date.getDay();
+      if (dow === 0 || dow === 6) return false;
       const mmdd = `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-      return dow !== 0 && dow !== 6 && !fixed.includes(mmdd);
+      if (fixed.includes(mmdd)) return false;
+      if (getMoveable(date.getFullYear()).includes(fmt(date))) return false;
+      return true;
     };
+
     const ref = new Date(reference_date);
     if (isNaN(ref)) { const r = { error: "Invalid date format. Use YYYY-MM-DD" }; return { content: [{ type: "text", text: JSON.stringify(r) }], structuredContent: r }; }
+
     let resultDate;
-    if (rule === "next_working_day") { const d = new Date(ref); d.setDate(d.getDate() + 1); while (!isWorkingDay(d)) d.setDate(d.getDate() + 1); resultDate = d.toISOString().split("T")[0]; }
-    if (rule === "last_working_day_of_month") { const d = new Date(ref.getFullYear(), ref.getMonth() + 1, 0); while (!isWorkingDay(d)) d.setDate(d.getDate() - 1); resultDate = d.toISOString().split("T")[0]; }
-    if (rule === "first_working_day_of_month") { const d = new Date(ref.getFullYear(), ref.getMonth(), 1); while (!isWorkingDay(d)) d.setDate(d.getDate() + 1); resultDate = d.toISOString().split("T")[0]; }
+    if (rule === "next_working_day") {
+      const d = new Date(ref); d.setDate(d.getDate() + 1);
+      while (!isWorkingDay(d)) d.setDate(d.getDate() + 1);
+      resultDate = fmt(d);
+    }
+    if (rule === "last_working_day_of_month") {
+      const d = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
+      while (!isWorkingDay(d)) d.setDate(d.getDate() - 1);
+      resultDate = fmt(d);
+    }
+    if (rule === "first_working_day_of_month") {
+      const d = new Date(ref.getFullYear(), ref.getMonth(), 1);
+      while (!isWorkingDay(d)) d.setDate(d.getDate() + 1);
+      resultDate = fmt(d);
+    }
     if (rule === "nth_working_day") {
       if (!n || n < 1) { const r = { error: "For nth_working_day rule, provide n >= 1" }; return { content: [{ type: "text", text: JSON.stringify(r) }], structuredContent: r }; }
       const d = new Date(ref.getFullYear(), ref.getMonth(), 1);
       let count = 0;
-      while (count < n) { if (isWorkingDay(d)) count++; if (count < n) d.setDate(d.getDate() + 1); }
-      resultDate = d.toISOString().split("T")[0];
+      while (true) {
+        if (isWorkingDay(d)) {
+          count++;
+          if (count === n) break;
+        }
+        d.setDate(d.getDate() + 1);
+        // Safety: don't loop past month
+        if (d.getMonth() !== ref.getMonth()) { resultDate = null; break; }
+      }
+      resultDate = resultDate === null ? null : fmt(d);
+      if (resultDate === null) { const r = { error: `Month does not have ${n} working days` }; return { content: [{ type: "text", text: JSON.stringify(r) }], structuredContent: r }; }
     }
+
     const r = { country: code, reference_date, rule, n: n || null, result_date: resultDate };
     return { content: [{ type: "text", text: JSON.stringify(r) }], structuredContent: r };
   });
@@ -855,7 +861,7 @@ const createServer = () => {
       buyer_is_tax_registered: z.boolean().describe("Whether the buyer is tax registered (B2B) or not (B2C)"),
       operation_type: z.enum(["goods", "services", "digital_services"]).describe("Type of supply")
     },
-    outputSchema: { treatment: z.string(), description: z.string(), seller_charges_tax: z.boolean(), applicable_rate: z.string(), seller_country: z.string(), buyer_country: z.string(), operation_type: z.string(), notes: z.string(), disclaimer: z.string() },
+    outputSchema: { treatment: z.string(), description: z.string(), seller_charges_tax: z.boolean(), applicable_rate: z.string(), seller_country: z.string(), buyer_country: z.string(), buyer_is_tax_registered: z.boolean(), operation_type: z.string(), notes: z.string(), disclaimer: z.string() },
     annotations: { title: "Suggest LatAm VAT Treatment", readOnlyHint: true, idempotentHint: true, openWorldHint: false }
   }, async ({ seller_country, buyer_country, buyer_is_tax_registered, operation_type }) => {
     const seller = seller_country.toUpperCase();
@@ -936,7 +942,10 @@ const createServer = () => {
   return server;
 };
 
-// ── Dual Transport: stdio (Glama) or HTTP (Railway) ──
+// ════════════════════════════════════════════════
+// DUAL TRANSPORT: stdio (Glama) or HTTP (Railway)
+// ════════════════════════════════════════════════
+
 const isStdio = process.env.MCP_HTTP !== "true";
 
 if (isStdio) {
@@ -960,6 +969,11 @@ if (isStdio) {
         },
         mcp_endpoint: "/mcp"
       }));
+      return;
+    }
+    if (req.method === "GET" && req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
       return;
     }
     if (req.url === "/mcp") {
