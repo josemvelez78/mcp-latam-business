@@ -1,0 +1,14 @@
+{
+  "name": "mcp-latam-business",
+  "version": "1.0.0",
+  "description": "Latin American business compliance suite for AI agents — validation, business rules, labor helpers and invoice/VAT tools for BR, MX, CL, AR, CO and more.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.0"
+  }
+}
